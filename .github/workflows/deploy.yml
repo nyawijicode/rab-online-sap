@@ -1,0 +1,86 @@
+name: Deploy to cPanel via FTP
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      FTP_REMOTE_DIR: ./ # root login: /home/premmiereco/rab.premmiere.co.id
+      DEPLOY_DIR: deploy/
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Prepare deploy folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$DEPLOY_DIR"
+          mkdir -p "$DEPLOY_DIR"
+
+          # Copy isi repo -> DEPLOY_DIR, tapi buang yang ga perlu di production
+          rsync -a \
+            --exclude=".git*" \
+            --exclude=".github" \
+            --exclude="node_modules" \
+            --exclude="tests" \
+            --exclude="storage" \
+            --exclude=".env" \
+            --exclude="public" \
+            --exclude="database/seeders" \
+            --exclude="database/factories" \
+            --exclude="*.md" \
+            --exclude="*.lock" \
+            --exclude="*.yml" \
+            --exclude="*.yaml" \
+            --exclude="package*.json" \
+            ./ "$DEPLOY_DIR"
+
+          # Hamparkan isi public, tapi pakai index.php & .htaccess versi server
+          if [ -d public ]; then
+            rsync -a \
+              --exclude="index.php" \
+              --exclude=".htaccess" \
+              public/ "$DEPLOY_DIR"
+          fi
+
+      - name: Deploy to cPanel (FTP/FTPS)
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.CPANEL_FTP_SERVER }}
+          username: ${{ secrets.CPANEL_FTP_USERNAME }}
+          password: ${{ secrets.CPANEL_FTP_PASSWORD }}
+          port: ${{ secrets.CPANEL_FTP_PORT || '21' }}
+          # Kalau FTPS sering putus, set CPANEL_FTP_SECURE=false di Secrets, atau ganti 'ftp' di sini
+          protocol: ${{ secrets.CPANEL_FTP_SECURE == 'true' && 'ftps' || 'ftp' }}
+          local-dir: ${{ env.DEPLOY_DIR }}
+          server-dir: ${{ env.FTP_REMOTE_DIR }}
+          log-level: minimal
+          exclude: |
+            **/.git*
+            **/.github*
+            node_modules/**
+            tests/**
+            storage/**
+            .env
+            .htaccess
+            index.php
+            .htaccsess
+            database/seeders/**
+            database/factories/**
+            *.md
+            *.lock
+            *.yml
+            *.yaml
+            package*.json
+      - name: Create migrate flag
+        run: |
+          echo "run" > ${{ env.DEPLOY_DIR }}/run_migrate.flag

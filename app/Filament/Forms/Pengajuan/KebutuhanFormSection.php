@@ -1,0 +1,453 @@
+<?php
+
+namespace App\Filament\Forms\Pengajuan;
+
+use App\Models\RequestMarcomm;
+use Filament\Forms;
+use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\Grid;
+use Filament\Forms\Components\Section;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Repeater;
+use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
+use Filament\Forms\Get;
+use Filament\Forms\Set;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+
+class KebutuhanFormSection
+{
+    public static function schema(): array
+    {
+        return [
+            Section::make('Pengajuan RAB Marcomm Kebutuhan Pusat dan Sales')
+                ->schema([
+                    Repeater::make('pengajuan_marcomm_kebutuhans')
+                        ->label('Form RAB Marcomm Kebutuhan Pusat dan Sales')
+                        ->relationship('pengajuan_marcomm_kebutuhans') // relasi ke model
+                        ->schema([
+                            TextInput::make('deskripsi')
+                                ->label('Deskripsi')
+                                ->placeholder('Masukkan deskripsi kebutuhan')
+                                ->required()
+                                ->columnSpanFull(),
+
+                            TextInput::make('qty')
+                                ->label('Qty')
+                                ->numeric()
+                                ->minValue(1)
+                                ->required()
+                                ->afterStateUpdated(function ($state, Get $get, Set $set) {
+                                    $harga = (int) str_replace('.', '', $get('harga_satuan'));
+                                    $set('subtotal', $state && $harga ? $state * $harga : null);
+                                }),
+                            TextInput::make('tipe')
+                                ->label('Tipe')
+                                ->placeholder('Masukkan tipe kebutuhan')
+                                ->maxLength(255)
+                                ->nullable(),
+
+                            TextInput::make('harga_satuan')
+                                ->label('Harga')
+                                ->placeholder('Contoh: 500000')
+                                ->required()
+                                ->default(0)
+                                ->dehydrated()
+                                ->prefix('Rp ')
+                                ->extraAttributes(['class' => 'currency-input'])
+                                // tampilkan 1.000.000 saat form dibuka
+                                ->afterStateHydrated(function (TextInput $component, $state) {
+                                    $component->state(($state !== null && $state !== '')
+                                        ? number_format((int) $state, 0, ',', '.')
+                                        : null);
+                                })
+                                // sebelum simpan/validasi: "1.234.567" -> 1234567
+                                ->dehydrateStateUsing(function ($state) {
+                                    $digits = preg_replace('/\D+/', '', (string) $state);
+                                    return $digits === '' ? null : (int) $digits;
+                                })
+                                ->afterStateUpdated(function ($state, Get $get, Set $set) {
+                                    $qty = (int) $get('qty');
+                                    $harga = (int) str_replace('.', '', $state);
+                                    $set('subtotal', $qty && $harga ? $qty * $harga : null);
+                                }),
+
+                            TextInput::make('subtotal')
+                                ->label('Subtotal')
+                                ->disabled()
+                                ->required()
+                                ->dehydrated()
+                                ->prefix('Rp ')
+                                ->formatStateUsing(fn($state) => $state ? number_format((int) $state, 0, ',', '.') : null)
+                                ->dehydrateStateUsing(function (Get $get) {
+                                    $qty = (int) $get('qty');
+                                    $harga = (int) str_replace('.', '', $get('harga_satuan'));
+                                    return $qty && $harga ? $qty * $harga : null;
+                                })
+                                ->columnSpanFull(),
+                        ])
+                        ->afterStateUpdated(function ($state, callable $set) {
+                            // Hitung ulang total_biaya dari semua item
+                            $total = collect($state)->sum(fn($item) => (int) ($item['subtotal'] ?? 0));
+                            $set('total_biaya', $total);
+                        })
+                        ->columns(3)
+                        ->addActionLabel('Tambah Kebutuhan')
+                        ->columnSpanFull()
+                        ->defaultItems(1)
+                        ->itemLabel('Detail Kebutuhan'),
+
+                    TextInput::make('total_biaya')
+                        ->label('Total Biaya')
+                        ->disabled()
+                        ->dehydrated()
+                        ->default(0)
+                        ->prefix('Rp ')
+                        ->extraAttributes(['class' => 'currency-input'])
+                        ->afterStateHydrated(function (TextInput $component, $state) {
+                            $component->state($state ? number_format((int) $state, 0, ',', '.') : null);
+                        })
+                        ->dehydrateStateUsing(function ($state) {
+                            return $state ? (int) str_replace('.', '', $state) : 0;
+                        })
+                        ->columnSpanFull(),
+                    Grid::make(4)->schema([
+                        // ========== SELECT NOMOR REQUEST MARCOMM (BISA PILIH BANYAK) ==========
+                        Toggle::make('menggunakan_request_marcomm')
+                            ->label('Menggunakan Request Marcomm')
+                            ->inline(false)
+                            ->default(false)
+                            ->onIcon('heroicon-s-check')
+                            ->offIcon('heroicon-s-x-mark')
+                            ->onColor('success')
+                            ->offColor('danger')
+                            ->reactive()
+                            ->disabled(function () {
+                                $user = Auth::user();
+                                if (! $user) {
+                                    return true;
+                                }
+
+                                // superadmin / marcomm bebas
+                                if ($user->hasAnyRole(['superadmin', 'marcomm'])) {
+                                    return false;
+                                }
+
+                                // scope: diri sendiri + bawahan
+                                $subordinateIds = DB::table('user_statuses')
+                                    ->where('atasan_id', $user->id)
+                                    ->pluck('user_id');
+
+                                $scopeIds = $subordinateIds->push($user->id);
+
+                                $hasAny = RequestMarcomm::whereIn('user_id', $scopeIds)->exists();
+
+                                return ! $hasAny;
+                            })
+                            ->helperText(function () {
+                                $user = Auth::user();
+                                if (! $user) {
+                                    return 'Silakan login.';
+                                }
+
+                                if ($user->hasAnyRole(['superadmin', 'marcomm'])) {
+                                    return 'Anda dapat memilih Request Marcomm mana pun.';
+                                }
+
+                                $subordinateIds = DB::table('user_statuses')
+                                    ->where('atasan_id', $user->id)
+                                    ->pluck('user_id');
+
+                                $scopeIds = $subordinateIds->push($user->id);
+
+                                $hasAny = RequestMarcomm::whereIn('user_id', $scopeIds)->exists();
+
+                                return $hasAny
+                                    ? 'Silakan pilih Request Marcomm.'
+                                    : 'Belum ada Request Marcomm.';
+                            }),
+
+                        Select::make('request_marcomm_id')
+                            ->label('Nomor Request Marcomm')
+                            ->hidden(fn(Get $get) => ! $get('menggunakan_request_marcomm'))
+                            ->dehydrated()
+                            ->nullable()
+                            ->searchable()
+                            ->preload()
+                            ->multiple()
+                            ->options(function () {
+                                $user = Auth::user();
+
+                                $base = RequestMarcomm::query()
+                                    ->with('user:id,name')
+                                    ->select(['id', 'no_request', 'user_id', 'kebutuhan'])
+                                    ->orderByDesc('id');
+
+                                if ($user && ! $user->hasAnyRole(['superadmin', 'marcomm'])) {
+                                    $subordinateIds = DB::table('user_statuses')
+                                        ->where('atasan_id', $user->id)
+                                        ->pluck('user_id');
+
+                                    $scopeIds = $subordinateIds->push($user->id);
+                                    $base->whereIn('user_id', $scopeIds);
+                                }
+
+                                return $base->get()->mapWithKeys(function (RequestMarcomm $rm) {
+                                    $nama   = $rm->user?->name ?? '—';
+                                    $labels = $rm->kebutuhanLabels(); // array label enum
+                                    $kebStr = empty($labels)
+                                        ? '-'
+                                        : implode(', ', $labels);
+
+                                    return [
+                                        $rm->id => "{$rm->no_request} — {$nama} — {$kebStr}",
+                                    ];
+                                })->toArray();
+                            })
+                            ->getSearchResultsUsing(function (string $search) {
+                                $user = Auth::user();
+
+                                $base = RequestMarcomm::query()
+                                    ->join('users', 'users.id', '=', 'request_marcomms.user_id')
+                                    ->where(function ($q) use ($search) {
+                                        $q->where('request_marcomms.no_request', 'like', "%{$search}%")
+                                            ->orWhere('users.name', 'like', "%{$search}%");
+                                    })
+                                    ->select([
+                                        'request_marcomms.id',
+                                        'request_marcomms.no_request',
+                                        'request_marcomms.kebutuhan',
+                                        'users.name as user_name',
+                                    ])
+                                    ->orderByDesc('request_marcomms.id')
+                                    ->limit(50);
+
+                                if ($user && ! $user->hasAnyRole(['superadmin', 'marcomm'])) {
+                                    $subordinateIds = DB::table('user_statuses')
+                                        ->where('atasan_id', $user->id)
+                                        ->pluck('user_id');
+
+                                    $scopeIds = $subordinateIds->push($user->id);
+                                    $base->whereIn('request_marcomms.user_id', $scopeIds);
+                                }
+
+                                return $base->get()->mapWithKeys(function ($row) {
+                                    // kebutuhan di DB masih array value enum → kita tampilkan apa adanya di sini,
+                                    // label rapi nanti di getOptionLabelUsing
+                                    return [
+                                        $row->id => "{$row->no_request} — {$row->user_name}",
+                                    ];
+                                })->toArray();
+                            })
+                            ->getOptionLabelUsing(function ($value) {
+                                if (blank($value)) {
+                                    return null;
+                                }
+
+                                $ids = is_array($value) ? $value : [$value];
+
+                                $items = RequestMarcomm::query()
+                                    ->with('user:id,name')
+                                    ->select('id', 'no_request', 'user_id', 'kebutuhan')
+                                    ->whereIn('id', $ids)
+                                    ->get();
+
+                                return $items->map(function (RequestMarcomm $rm) {
+                                    $nama   = $rm->user?->name ?? '—';
+                                    $labels = $rm->kebutuhanLabels();
+                                    $kebStr = empty($labels)
+                                        ? '-'
+                                        : implode(', ', $labels);
+
+                                    return "{$rm->no_request} — {$nama} — {$kebStr}";
+                                })->join(', ');
+                            })
+                            ->afterStateUpdated(function ($state, Set $set) {
+                                // bikin ringkasan gabungan kebutuhan dari semua request yg dipilih
+                                if (is_array($state) && count($state) > 0) {
+                                    $items = RequestMarcomm::whereIn('id', $state)->get();
+                                    $labels = $items
+                                        ->flatMap(fn(RequestMarcomm $rm) => $rm->kebutuhanLabels())
+                                        ->unique()
+                                        ->values()
+                                        ->all();
+
+                                    $set('ringkasan_request_marcomm', implode(', ', $labels));
+                                } else {
+                                    $set('ringkasan_request_marcomm', null);
+                                }
+                            }),
+
+                        TextInput::make('ringkasan_request_marcomm')
+                            ->label('Ringkasan Request Marcomm')
+                            ->hidden(fn(Get $get) => ! $get('menggunakan_request_marcomm'))
+                            ->dehydrated()
+                            ->nullable(),
+                        Toggle::make('kebutuhan_amplop')
+                            ->label('Kebutuhan Amplop')
+                            ->inline(false)
+                            ->default(false)
+                            ->onIcon('heroicon-s-check')
+                            ->offIcon('heroicon-s-x-mark')
+                            ->onColor('success')
+                            ->offColor('danger')
+                            ->reactive(),
+                        Toggle::make('kebutuhan_kartu')
+                            ->label('Kebutuhan Kartu/ID Card')
+                            ->inline(false)
+                            ->default(false)
+                            ->onIcon('heroicon-s-check')
+                            ->offIcon('heroicon-s-x-mark')
+                            ->onColor('success')
+                            ->offColor('danger')
+                            ->reactive(),
+                        Toggle::make('kebutuhan_kemeja')
+                            ->label('Kebutuhan Kemeja')
+                            ->inline(false)
+                            ->default(false)
+                            ->onIcon('heroicon-s-check')
+                            ->offIcon('heroicon-s-x-mark')
+                            ->onColor('success')
+                            ->offColor('danger')
+                            ->reactive(),
+                        Toggle::make('kebutuhan_katalog')
+                            ->label('Kebutuhan Katalog')
+                            ->inline(false)
+                            ->default(false)
+                            ->onIcon('heroicon-s-check')
+                            ->offIcon('heroicon-s-x-mark')
+                            ->onColor('success')
+                            ->offColor('danger')
+                            ->reactive(),
+                        Toggle::make('lampiran_marcomm_kebutuhan')
+                            ->label('Tambahkan Lampiran')
+                            ->inline(false)
+                            ->default(false)
+                            ->onIcon('heroicon-s-check')
+                            ->offIcon('heroicon-s-x-mark')
+                            ->onColor('success')
+                            ->offColor('danger')
+                            ->reactive()
+                            ->dehydrated(), // ⬅️ penting agar nilainya dikirim ke backend
+                    ]),
+                    Repeater::make('marcommKebutuhanAmplops')
+                        ->label('Form Pengajuan Marcomm Kebutuhan Amplop')
+                        ->relationship('marcommKebutuhanAmplops')
+                        ->schema([
+                            TextArea::make('cabang')
+                                ->label('Cabang')
+                                ->placeholder('Nama Cabang / Jika tidak tahu di isi - ')
+                                ->required(),
+                            TextArea::make('jumlah')
+                                ->label('Jumlah')
+                                ->placeholder('Jumlah')
+                                ->required(),
+                        ])
+                        ->columns(2)
+                        ->addActionLabel('Tambah Kebutuhan')
+                        ->columnSpanFull()
+                        ->defaultItems(1)
+                        ->itemLabel('Detail Kebutuhan Amplop')
+                        ->visible(fn($get) => $get('kebutuhan_amplop') === true),
+                    Repeater::make('marcommKebutuhanKartus')
+                        ->label('Form Pengajuan Marcomm Kebutuhan Kartu Nama dan ID Card')
+                        ->relationship('marcommKebutuhanKartus')
+                        ->schema([
+                            TextArea::make('kartu_nama')
+                                ->label('Kartu Nama')
+                                ->placeholder('Nama Sales / - ')
+                                ->required(),
+                            TextArea::make('id_card')
+                                ->label('ID Card')
+                                ->placeholder('Nama Sales / -')
+                                ->required(),
+                        ])
+                        ->columns(2)
+                        ->addActionLabel('Tambah Kebutuhan')
+                        ->columnSpanFull()
+                        ->defaultItems(1)
+                        ->itemLabel('Detail Kebutuhan Kartu')
+                        ->visible(fn($get) => $get('kebutuhan_kartu') === true),
+                    Repeater::make('marcommKebutuhanKemejas')
+                        ->label('Form Pengajuan Marcomm Kebutuhan Kemeja')
+                        ->relationship('marcommKebutuhanKemejas')
+                        ->schema([
+                            TextArea::make('nama')
+                                ->label('Nama')
+                                ->placeholder('Nama')
+                                ->required(),
+                            TextArea::make('ukuran')
+                                ->label('Ukuran')
+                                ->placeholder('S,M,L,XL / Jika tidak tahu di isi -')
+                                ->required(),
+                        ])
+                        ->columns(2)
+                        ->addActionLabel('Tambah Kebutuhan')
+                        ->columnSpanFull()
+                        ->defaultItems(1)
+                        ->itemLabel('Detail Kebutuhan Kemeja')
+                        ->visible(fn($get) => $get('kebutuhan_kemeja') === true),
+                    Repeater::make('marcommKebutuhanKatalogs')
+                        ->label('Form Pengajuan Marcomm Kebutuhan Katalog')
+                        ->relationship('marcommKebutuhanKatalogs')
+                        ->schema([
+                            TextArea::make('cabang')
+                                ->label('Cabang')
+                                ->placeholder('Nama Cabang / Jika tidak tahu di isi - ')
+                                ->required(),
+                            TextArea::make('jumlah')
+                                ->label('Jumlah')
+                                ->placeholder('Jumlah')
+                                ->required(),
+                        ])
+                        ->columns(2)
+                        ->addActionLabel('Tambah Kebutuhan')
+                        ->columnSpanFull()
+                        ->defaultItems(1)
+                        ->itemLabel('Detail Kebutuhan Katalog')
+                        ->visible(fn($get) => $get('kebutuhan_katalog') === true),
+                    Repeater::make('lampiranKebutuhan')
+                        ->label('Lampiran RAB Kebutuhan Pusat/Sales')
+                        ->relationship('lampiranKebutuhan')
+                        ->schema([
+                            FileUpload::make('file_path')
+                                ->label('File Lampiran (PDF/Gambar)')
+                                ->disk('public')
+                                ->directory('lampiran-kebutuhan')
+                                ->preserveFilenames()
+                                ->acceptedFileTypes(['application/pdf', 'image/*'])
+                                ->maxSize(10240)
+                                ->required()
+                                ->reactive()
+                                ->afterStateUpdated(function (Set $set, $state) {
+                                    if (is_array($state) && count($state) > 0) {
+                                        $file = array_key_first($state);
+                                        if ($file) {
+                                            $filename = pathinfo($file, PATHINFO_BASENAME);
+                                            $set('original_name', $filename);
+                                        }
+                                    }
+                                }),
+
+                            TextInput::make('original_name')
+                                ->label('Nama Lampiran')
+                                ->required()
+                                ->maxLength(255),
+                        ])
+
+                        ->defaultItems(1)
+                        ->visible(fn($get) => $get('lampiran_marcomm_kebutuhan') === true),
+                    Forms\Components\Textarea::make('keterangan')
+                        ->label('Keterangan')
+                        ->placeholder('Tuliskan keterangan tambahan di sini...')
+                        ->rows(4)
+                        ->maxLength(65535) // batas default untuk TEXT MySQL
+                        ->columnSpanFull(),
+                ])
+
+                ->visible(fn(Get $get) => $get('tipe_rab_id') == 5),
+        ];
+    }
+}

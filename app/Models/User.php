@@ -1,0 +1,85 @@
+<?php
+
+namespace App\Models;
+
+// use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use Spatie\Permission\Traits\HasRoles;
+use App\Traits\HasSystemHistory;
+
+class User extends Authenticatable
+{
+    /** @use HasFactory<\Database\Factories\UserFactory> */
+    use HasApiTokens, HasFactory, Notifiable, SoftDeletes, HasRoles, HasSystemHistory;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var list<string>
+     */
+    protected $fillable = [
+        'name',
+        'email',
+        'username',
+        'password',
+        'no_hp',
+        'company',
+        'is_active',
+    ];
+
+    /**
+     * The attributes that should be hidden for serialization.
+     *
+     * @var list<string>
+     */
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'email_verified_at' => 'datetime',
+            'password' => 'hashed',
+        ];
+    }
+    public function roles()
+    {
+        return $this->belongsToMany(Role::class);
+    }
+    public function persetujuanYangDiajukan()
+    {
+        return $this->hasMany(Persetujuan::class, 'user_id');
+    }
+
+    public function persetujuanSebagaiApprover()
+    {
+        return $this->hasMany(Persetujuan::class, 'approver_id');
+    }
+    public function userStatus()
+    {
+        return $this->hasOne(UserStatus::class);
+    }
+    public function pengajuanStatuses()
+    {
+        return $this->hasMany(PengajuanStatus::class);
+    }
+    public function approver()
+    {
+        return $this->belongsTo(User::class, 'approver_id');
+    }
+    public function status()
+    {
+        return $this->hasOne(\App\Models\UserStatus::class, 'user_id', 'id');
+    }
+}

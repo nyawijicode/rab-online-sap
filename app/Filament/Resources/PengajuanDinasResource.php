@@ -1,0 +1,135 @@
+<?php
+
+namespace App\Filament\Resources;
+
+use App\Filament\Resources\PengajuanDinasResource\Pages;
+use App\Filament\Resources\PengajuanDinasResource\RelationManagers;
+use App\Models\PengajuanDinas;
+use Filament\Forms;
+use Filament\Forms\Form;
+use Filament\Resources\Resource;
+use Filament\Tables;
+use Filament\Tables\Table;
+use App\Models\PengajuanStatus;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\SoftDeletingScope;
+
+class PengajuanDinasResource extends Resource
+{
+    protected static ?string $model = PengajuanDinas::class;
+
+    protected static ?string $navigationIcon = 'heroicon-o-map';
+    protected static ?string $navigationGroup = 'Detail Pengajuan RAB';
+    protected static ?string $label = 'Perjalanan Dinas';
+    protected static ?string $pluralLabel = 'Perjalanan Dinas';
+
+    public static function form(Form $form): Form
+    {
+        return $form
+            ->schema([
+                Forms\Components\Select::make('pengajuan_id')
+                    ->relationship('pengajuan', 'no_rab')
+                    ->required(),
+
+                Forms\Components\Select::make('deskripsi')
+                    ->options([
+                        'Transportasi' => 'Transportasi',
+                        'Makan' => 'Makan',
+                        'Lain-lain' => 'Lain-lain',
+                    ])
+                    ->required(),
+
+                Forms\Components\Textarea::make('keterangan'),
+                Forms\Components\TextInput::make('pic'),
+                Forms\Components\TextInput::make('jml_hari')->numeric(),
+                Forms\Components\TextInput::make('harga_satuan')->numeric(),
+                Forms\Components\TextInput::make('subtotal')->numeric(),
+            ]);
+    }
+
+    public static function table(Table $table): Table
+    {
+        return $table
+            ->columns([
+                Tables\Columns\TextColumn::make('pengajuan.no_rab')->label('No RAB')->searchable(),
+                Tables\Columns\TextColumn::make('deskripsi'),
+                Tables\Columns\TextColumn::make('keterangan')->limit(30),
+                Tables\Columns\TextColumn::make('pic'),
+                Tables\Columns\TextColumn::make('jml_hari'),
+                Tables\Columns\TextColumn::make('harga_satuan')->money('IDR'),
+                Tables\Columns\TextColumn::make('subtotal')->money('IDR'),
+            ])
+            ->defaultSort('created_at', 'desc') // ⬅️ Tambahkan ini
+            ->filters([
+                //
+            ])
+            ->defaultSort('created_at', 'desc') // ⬅️ Tambahkan ini
+            ->actions([
+                Tables\Actions\Action::make('history')
+                    ->label('History')
+                    ->icon('heroicon-o-clock')
+                    ->color('info')
+                    ->modalHeading('Log Aktivitas')
+                    ->modalContent(fn($record) => view('filament.components.system-history-modal', ['record' => $record]))
+                    ->modalSubmitAction(false)
+                    ->modalCancelActionLabel('Tutup'),
+                Tables\Actions\EditAction::make(),
+            ]);
+    }
+
+    public static function getRelations(): array
+    {
+        return [
+            //
+        ];
+    }
+
+    public static function getPages(): array
+    {
+        return [
+            'index' => Pages\ListPengajuanDinas::route('/'),
+            'create' => Pages\CreatePengajuanDinas::route('/create'),
+            'edit' => Pages\EditPengajuanDinas::route('/{record}/edit'),
+        ];
+    }
+    public static function canViewAny(): bool
+    {
+        return true; // Semua user bisa lihat list
+    }
+
+    public static function canCreate(): bool
+    {
+        return false;
+    }
+
+    public static function canEdit($record): bool
+    {
+        return false;
+    }
+
+    public static function canDelete($record): bool
+    {
+        return false;
+    }
+    public static function getEloquentQuery(): Builder
+    {
+        $user = auth()->user();
+
+        // Superadmin lihat semua
+        if ($user->hasRole('superadmin')) {
+            return parent::getEloquentQuery();
+        }
+
+        // Cari ID pengajuan di mana user adalah approver
+        $pengajuanIdsSebagaiApprover = PengajuanStatus::where('user_id', $user->id)
+            ->pluck('pengajuan_id')
+            ->toArray();
+
+        return parent::getEloquentQuery()
+            ->whereHas('pengajuan', function ($query) use ($user, $pengajuanIdsSebagaiApprover) {
+                $query
+                    ->where('user_id', $user->id)
+                    ->orWhereIn('id', $pengajuanIdsSebagaiApprover);
+            });
+    }
+}

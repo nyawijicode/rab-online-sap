@@ -1,0 +1,33 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+
+class PengajuanDinasActivity extends Model
+{
+    use HasFactory, SoftDeletes;
+    use \App\Traits\HasSystemHistory;
+
+    protected $table = 'pengajuan_dinas_activities';
+
+
+    protected $fillable = [
+        'pengajuan_id',
+        'no_activity',
+        'nama_dinas',
+        'keterangan',
+        'pekerjaan',
+        'nilai',
+        'target',
+    ];
+
+    public function pengajuan(): BelongsTo
+    {
+        return $this->belongsTo(PengajuanDinas::class, 'pengajuan_id', 'id');
+    }
+}
