@@ -146,6 +146,12 @@ class CreatePengajuan extends CreateRecord
                     $autoApproveBy = 'owner';
                 }
 
+                $userStatus = \App\Models\UserStatus::where('user_id', $pengajuan->user_id)->first();
+                if ($pengajuan->is_urgent && $userStatus && in_array($userStatus->atasan_id, [1, 16])) {
+                    $autoApprove   = true;
+                    $autoApproveBy = 'atasan langsung dadakan (' . $userStatus->atasan_id . ')';
+                }
+
                 // ===============================================
                 // PERBAIKAN: updateOrCreate supaya tidak nabrak
                 // UNIQUE (pengajuan_id, user_id)
@@ -180,7 +186,14 @@ class CreatePengajuan extends CreateRecord
             ->count();
 
         if ($totalApprovers > 0 && $totalApprovers === $totalApproved) {
-            $pengajuan->update(['status' => 'selesai']);
+            $updateData = ['status' => 'selesai'];
+            if ($pengajuan->is_urgent) {
+                $updateData['urgent_approved'] = true;
+                $updateData['urgent_approved_at'] = now();
+                // Optionally set urgent_approved_by, maybe to the atasan_id? 
+                // We could just leave it or set a dummy value if needed, but normally true is enough.
+            }
+            $pengajuan->update($updateData);
             Log::info("🎉 Pengajuan ID {$pengajuan->id} otomatis SELESAI (semua auto-approve).");
         }
 

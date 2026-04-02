@@ -224,6 +224,12 @@ class EditPengajuan extends EditRecord
                     $autoApproveBy = 'owner';
                 }
 
+                $userStatus = \App\Models\UserStatus::where('user_id', $pengajuan->user_id)->first();
+                if ($pengajuan->is_urgent && $userStatus && in_array($userStatus->atasan_id, [1, 16])) {
+                    $autoApprove   = true;
+                    $autoApproveBy = 'atasan langsung dadakan (' . $userStatus->atasan_id . ')';
+                }
+
                 \App\Models\PengajuanStatus::create([
                     'pengajuan_id'   => $pengajuan->id,
                     'persetujuan_id' => $persetujuan->id,
@@ -232,6 +238,23 @@ class EditPengajuan extends EditRecord
                     'approved_at'    => $autoApprove ? now() : null,
                 ]);
             }
+        }
+
+        // ===========================
+        // CEK STATUS AKHIR (AUTO SELESAI)
+        // ===========================
+        $totalApprovers = \App\Models\PengajuanStatus::where('pengajuan_id', $pengajuan->id)->count();
+        $totalApproved  = \App\Models\PengajuanStatus::where('pengajuan_id', $pengajuan->id)
+            ->where('is_approved', true)
+            ->count();
+
+        if ($totalApprovers > 0 && $totalApprovers === $totalApproved) {
+            $updateData = ['status' => 'selesai'];
+            if ($pengajuan->is_urgent) {
+                $updateData['urgent_approved'] = true;
+                $updateData['urgent_approved_at'] = now();
+            }
+            $pengajuan->update($updateData);
         }
 
         $total = $this->record->calculateTotalBiaya();
