@@ -164,6 +164,10 @@ class PersetujuanResource extends Resource
                     ->label('User')
                     ->searchable(),
 
+                TextColumn::make('user.status.cabang.nama')
+                    ->label('Cabang')
+                    ->sortable(),
+
                 TextColumn::make('company')
                     ->label('Company')
                     ->badge()
@@ -234,6 +238,13 @@ class PersetujuanResource extends Resource
                     ->formatStateUsing(fn($state) => $state ? 'Ya' : 'Tidak')
                     ->badge()
                     ->color(fn($state) => $state ? 'success' : 'danger'),
+            ])
+            ->filters([
+                Tables\Filters\SelectFilter::make('cabang')
+                    ->label('Cabang')
+                    ->relationship('user.status.cabang', 'kode')
+                    ->searchable()
+                    ->preload(),
             ])
             ->actions([
                 Tables\Actions\Action::make('history')
@@ -310,7 +321,7 @@ class PersetujuanResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery()->with('approvers');
+        $query = parent::getEloquentQuery()->with(['approvers', 'user.status.cabang']);
 
         // Batasi marcomm/rt/koordinator teknisi hanya melihat miliknya sendiri
         if (
