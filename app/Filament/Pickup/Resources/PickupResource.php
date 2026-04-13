@@ -891,6 +891,19 @@ class PickupResource extends Resource
                 Tables\Filters\SelectFilter::make('perusahaan_id')
                     ->label('Perusahaan')
                     ->options(fn() => Company::query()->orderBy('nama_perusahaan')->pluck('nama_perusahaan', 'id')->all()),
+                Tables\Filters\SelectFilter::make('kota')
+                    ->label('Filter Kota')
+                    ->options(function () {
+                        return Pickup::query()
+                            ->whereNotNull('kota')
+                            ->where('kota', '!=', '')
+                            ->distinct()
+                            ->orderBy('kota')
+                            ->pluck('kota', 'kota')
+                            ->toArray();
+                    })
+                    ->searchable()
+                    ->preload(),
                 TrashedFilter::make()
                     ->visible(fn() => auth()->user()?->hasRole('superadmin')),
             ])
