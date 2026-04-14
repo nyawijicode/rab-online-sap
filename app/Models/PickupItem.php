@@ -15,6 +15,7 @@ class PickupItem extends Model
         'description',
         'po_quantity',
         'pickup_quantity',
+        'unit',
     ];
 
     protected $casts = [

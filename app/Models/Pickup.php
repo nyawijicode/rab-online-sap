@@ -38,6 +38,14 @@ class Pickup extends Model
         'perusahaan_id',
         'kota',
         'attachments',
+        'cabang_pic_name',
+        'cabang_pic_phone',
+        'customer_name',
+        'id_paket',
+        'penerima_pic_name',
+        'penerima_pic_phone',
+        'cabang_id',
+        'cabang_pic_user_id',
     ];
 
     protected $casts = [
@@ -72,5 +80,15 @@ class Pickup extends Model
     public function perusahaan(): BelongsTo
     {
         return $this->belongsTo(Company::class, 'perusahaan_id');
+    }
+
+    public function cabang(): BelongsTo
+    {
+        return $this->belongsTo(Cabang::class, 'cabang_id');
+    }
+
+    public function cabangPicUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'cabang_pic_user_id');
     }
 }

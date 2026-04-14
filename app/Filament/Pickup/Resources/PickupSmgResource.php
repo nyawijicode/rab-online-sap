@@ -210,10 +210,20 @@ class PickupSmgResource extends Resource
     }
     public static function getEloquentQuery(): Builder
     {
-        return parent::getEloquentQuery()
+        $query = parent::getEloquentQuery()
             ->withoutGlobalScopes([
                 \Illuminate\Database\Eloquent\SoftDeletingScope::class,
             ]);
+
+        $user = auth()->user();
+        if (!auth()->user()->hasAnyRole(['superadmin', 'logistik', 'purchasing'])) {
+            $query->where(function ($q) {
+                $q->where('created_by', auth()->id())
+                  ->orWhere('cabang_pic_user_id', auth()->id());
+            });
+        }
+
+        return $query;
     }
 
     public static function shouldRegisterNavigation(): bool

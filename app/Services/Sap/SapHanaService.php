@@ -64,6 +64,7 @@ SELECT
     P."ItemCode",
     P."Dscription",
     P."Quantity",
+    P."unitMsr"    AS "Unit",
     P."Price",
     P."LineTotal",
     P."WhsCode",
