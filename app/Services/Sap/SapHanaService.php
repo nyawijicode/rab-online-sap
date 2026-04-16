@@ -264,13 +264,35 @@ SELECT
 FROM "SAP"."OCRD" AS BP
 LEFT JOIN "SAP"."OCRG" AS GR
     ON GR."GroupCode" = BP."GroupCode"
-WHERE BP."CardCode" LIKE 'VE%'
+WHERE LEFT(BP."CardCode", 2) IN ('VE', 'VB')
 ORDER BY BP."CardCode"
 SQL;
 
         return $this->connector->select($sql);
     }
+    public function searchVendorEkspedisi(string $search): array
+    {
+        $search = strtoupper(trim($search));
 
+        $sql = <<<SQL
+SELECT
+    BP."CardCode",
+    BP."CardName"
+FROM "SAP"."OCRD" AS BP
+LEFT JOIN "SAP"."OCRG" AS GR
+    ON GR."GroupCode" = BP."GroupCode"
+WHERE
+    BP."CardType" = 'S' -- supplier saja (lebih aman dari prefix)
+    AND (
+        UPPER(BP."CardCode") LIKE '%{$search}%'
+        OR UPPER(BP."CardName") LIKE '%{$search}%'
+    )
+ORDER BY BP."CardCode"
+LIMIT 50
+SQL;
+
+        return $this->connector->select($sql);
+    }
     /**
      * List semua Quality Check (header saja).
      */

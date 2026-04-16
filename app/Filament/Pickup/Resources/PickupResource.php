@@ -60,12 +60,20 @@ class PickupResource extends Resource
      *   'is_fulfilled'     => bool,    // true jika pickup_total_qty >= po_total_qty
      * ]
      */
-    public static function getPoQtyFulfillment(int $docEntry, ?int $excludePickupId = null): array
+    public static function getPoQtyFulfillment($docEntry, ?int $excludePickupId = null): array
     {
-        $sap   = app(SapHanaService::class);
-        $lines = $sap->getPurchaseOrderLines($docEntry);
+        $docEntry = (int) ($docEntry ?? 0);
+        $poTotalQty = 0.0;
 
-        $poTotalQty = collect($lines)->sum(fn($l) => (float) ($l['Quantity'] ?? 0));
+        if ($docEntry > 0) {
+            try {
+                $sap = app(SapHanaService::class);
+                $lines = $sap->getPurchaseOrderLines($docEntry);
+                $poTotalQty = collect($lines)->sum(fn($l) => (float) ($l['Quantity'] ?? 0));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("getPoQtyFulfillment: SAP fetch failed for DocEntry {$docEntry}: " . $e->getMessage());
+            }
+        }
 
         $pickupTotalQty = \App\Models\PickupItem::query()
             ->whereHas('pickup', function ($q) use ($docEntry, $excludePickupId) {
@@ -76,7 +84,7 @@ class PickupResource extends Resource
             ->sum('pickup_quantity');
 
         return [
-            'po_total_qty'     => $poTotalQty,
+            'po_total_qty'     => (float) $poTotalQty,
             'pickup_total_qty' => (float) $pickupTotalQty,
             'is_fulfilled'     => $poTotalQty > 0 && (float) $pickupTotalQty >= $poTotalQty,
         ];
@@ -146,34 +154,38 @@ class PickupResource extends Resource
                                         ->searchable()
                                         ->preload()
                                         ->options(function (Get $get, $record) {
-                                            $sap = app(SapHanaService::class);
+                                            if (static::getCompanyMode((int) $get('perusahaan_id')) !== 'sap') {
+                                                return [];
+                                            }
 
-                                            // ID pickup yang sedang diedit (null saat create)
-                                            $currentPickupId = optional($record)->id ?? request()->route('record');
+                                            try {
+                                                $sap = app(SapHanaService::class);
+                                                $currentPickupId = optional($record)->id ?? request()->route('record');
 
-                                            return collect($sap->getPurchaseOrders(statusPickup2: 'Y'))
-                                                ->filter(function ($r) use ($currentPickupId) {
-                                                    $docEntry = (int) $r['DocEntry'];
-                                                    if ($docEntry <= 0) return true;
+                                                return collect($sap->getPurchaseOrders(statusPickup2: 'Y'))
+                                                    ->filter(function ($r) use ($currentPickupId) {
+                                                        $docEntry = (int) $r['DocEntry'];
+                                                        if ($docEntry <= 0) return true;
 
-                                                    // Selalu tampilkan PO yang sedang dipilih di edit mode
-                                                    if ($currentPickupId) {
-                                                        $currentPo = \App\Models\Pickup::find($currentPickupId)?->po_docentry;
-                                                        if ((int) $currentPo === $docEntry) return true;
-                                                    }
+                                                        if ($currentPickupId) {
+                                                            $currentPo = \App\Models\Pickup::find($currentPickupId)?->po_docentry;
+                                                            if ((int) $currentPo === $docEntry) return true;
+                                                        }
 
-                                                    try {
-                                                        $fulfillment = static::getPoQtyFulfillment($docEntry, $currentPickupId ? (int) $currentPickupId : null);
-                                                        // Sembunyikan PO yang sudah terpenuhi
-                                                        return ! $fulfillment['is_fulfilled'];
-                                                    } catch (\Throwable $e) {
-                                                        return true;
-                                                    }
-                                                })
-                                                ->mapWithKeys(fn($r) => [
-                                                    (int) $r['DocEntry'] => ($r['DocNum'] ?? '-') . ' — ' . ($r['CardName'] ?? '-'),
-                                                ])
-                                                ->all();
+                                                        try {
+                                                            $fulfillment = static::getPoQtyFulfillment($docEntry, $currentPickupId ? (int) $currentPickupId : null);
+                                                            return ! $fulfillment['is_fulfilled'];
+                                                        } catch (\Throwable $e) {
+                                                            return true;
+                                                        }
+                                                    })
+                                                    ->mapWithKeys(fn($r) => [
+                                                        (int) $r['DocEntry'] => ($r['DocNum'] ?? '-') . ' — ' . ($r['CardName'] ?? '-'),
+                                                    ])
+                                                    ->all();
+                                            } catch (\Throwable $e) {
+                                                return [];
+                                            }
                                         })
                                         ->reactive()
                                         ->afterStateUpdated(function ($state, Forms\Set $set, Get $get) {
@@ -191,48 +203,48 @@ class PickupResource extends Resource
                                                 return;
                                             }
 
-                                            $sap = app(SapHanaService::class);
+                                            try {
+                                                $sap = app(SapHanaService::class);
+                                                $detail = $sap->getPurchaseOrderDetail((int) $state);
+                                                $header = $detail['header'] ?? null;
+                                                $lines  = $detail['lines'] ?? [];
 
-                                            $detail = $sap->getPurchaseOrderDetail((int) $state);
-                                            $header = $detail['header'] ?? null;
-                                            $lines  = $detail['lines'] ?? [];
+                                                if (! $header) return;
 
-                                            if (! $header) {
-                                                return;
+                                                $set('po_number', $header['DocNum'] ?? null);
+                                                $set('vendor_code', $header['CardCode'] ?? null);
+                                                $set('vendor_name', $header['CardName'] ?? null);
+                                                $set('package_id', $sap->getPurchaseOrderPackageId((int) $state));
+
+                                                $vendor = $sap->getVendorByCode((string) ($header['CardCode'] ?? ''));
+
+                                                if ($vendor) {
+                                                    $fullAddress = trim(implode(', ', array_filter([
+                                                        $vendor['Address']  ?? null,
+                                                        $vendor['ZipCode'] ?? null,
+                                                        $vendor['City']    ?? null,
+                                                        $vendor['Country'] ?? null,
+                                                    ])));
+
+                                                    $set('vendor_address', $fullAddress);
+                                                }
+
+                                                $mappedItems = collect($lines)->map(function ($line) {
+                                                    return [
+                                                        'item_code'        => $line['ItemCode'] ?? null,
+                                                        'item_code_sap'    => $line['ItemCode'] ?? null,
+                                                        'description'      => $line['Dscription'] ?? null,
+                                                        'po_quantity'      => $line['Quantity'] ?? null,
+                                                        'pickup_quantity'  => $line['Quantity'] ?? null,
+                                                        'unit'             => $line['Unit'] ?? null,
+                                                        'line_num'         => $line['LineNum'] ?? null,
+                                                    ];
+                                                })->all();
+
+                                                $set('items', $mappedItems);
+                                            } catch (\Throwable $e) {
+                                                \Illuminate\Support\Facades\Log::error("po_docentry afterStateUpdated failed: " . $e->getMessage());
                                             }
-
-                                            $set('po_number', $header['DocNum'] ?? null);
-                                            $set('vendor_code', $header['CardCode'] ?? null);
-                                            $set('vendor_name', $header['CardName'] ?? null);
-                                            $set('package_id', $sap->getPurchaseOrderPackageId((int) $state));
-
-                                            $vendor = $sap->getVendorByCode((string) ($header['CardCode'] ?? ''));
-
-                                            if ($vendor) {
-                                                $fullAddress = trim(implode(', ', array_filter([
-                                                    $vendor['Address']  ?? null,
-                                                    $vendor['ZipCode'] ?? null,
-                                                    $vendor['City']    ?? null,
-                                                    $vendor['Country'] ?? null,
-                                                ])));
-
-                                                $set('vendor_address', $fullAddress);
-                                            }
-
-                                            // Otomatis isi item
-                                            $mappedItems = collect($lines)->map(function ($line) {
-                                                return [
-                                                    'item_code'        => $line['ItemCode'] ?? null,
-                                                    'item_code_sap'    => $line['ItemCode'] ?? null,
-                                                    'description'      => $line['Dscription'] ?? null,
-                                                    'po_quantity'      => $line['Quantity'] ?? null,
-                                                    'pickup_quantity'  => $line['Quantity'] ?? null,
-                                                    'unit'             => $line['Unit'] ?? null,
-                                                    'line_num'         => $line['LineNum'] ?? null,
-                                                ];
-                                            })->all();
-
-                                            $set('items', $mappedItems);
                                         })
                                         ->rules([
                                             function (?Pickup $record) {
@@ -392,18 +404,22 @@ class PickupResource extends Resource
                                                     $docEntry = (int) ($get('../../po_docentry') ?? 0);
                                                     if ($docEntry <= 0) return [];
 
-                                                    $sap = app(SapHanaService::class);
-                                                    $lines = $sap->getPurchaseOrderLines($docEntry);
+                                                    try {
+                                                        $sap = app(SapHanaService::class);
+                                                        $lines = $sap->getPurchaseOrderLines($docEntry);
 
-                                                    return collect($lines)
-                                                        ->filter(fn($r) => ! empty($r['ItemCode']))
-                                                        ->mapWithKeys(function ($r) {
-                                                            $code = (string) $r['ItemCode'];
-                                                            $desc = (string) ($r['Dscription'] ?? '');
-                                                            $qty  = (string) ($r['Quantity'] ?? '');
-                                                            return [$code => "{$code} — {$desc} (PO Qty: {$qty})"];
-                                                        })
-                                                        ->all();
+                                                        return collect($lines)
+                                                            ->filter(fn($r) => ! empty($r['ItemCode']))
+                                                            ->mapWithKeys(function ($r) {
+                                                                $code = (string) $r['ItemCode'];
+                                                                $desc = (string) ($r['Dscription'] ?? '');
+                                                                $qty  = (string) ($r['Quantity'] ?? '');
+                                                                return [$code => "{$code} — {$desc} (PO Qty: {$qty})"];
+                                                            })
+                                                            ->all();
+                                                    } catch (\Throwable $e) {
+                                                        return [];
+                                                    }
                                                 })
                                                 ->disableOptionWhen(function (string $value, $state, Get $get) {
                                                     $items = $get('../../items') ?? [];
@@ -426,15 +442,19 @@ class PickupResource extends Resource
                                                         return;
                                                     }
 
-                                                    $sap = app(SapHanaService::class);
-                                                    $lines = $sap->getPurchaseOrderLines($docEntry);
+                                                    try {
+                                                        $sap = app(SapHanaService::class);
+                                                        $lines = $sap->getPurchaseOrderLines($docEntry);
 
-                                                    $row = collect($lines)->firstWhere('ItemCode', (string) $state);
+                                                        $row = collect($lines)->firstWhere('ItemCode', (string) $state);
 
-                                                    $set('description', $row['Dscription'] ?? null);
-                                                    $set('po_quantity', $row['Quantity'] ?? null);
-                                                    $set('unit', $row['Unit'] ?? null);
-                                                    $set('line_num', $row['LineNum'] ?? null);
+                                                        $set('description', $row['Dscription'] ?? null);
+                                                        $set('po_quantity', $row['Quantity'] ?? null);
+                                                        $set('unit', $row['Unit'] ?? null);
+                                                        $set('line_num', $row['LineNum'] ?? null);
+                                                    } catch (\Throwable $e) {
+                                                        \Illuminate\Support\Facades\Log::error("item_code_sap afterStateUpdated failed: " . $e->getMessage());
+                                                    }
                                                 })
                                                 ->visible(fn(Get $get) => static::getCompanyMode((int) $get('../../perusahaan_id')) === 'sap')
                                                 ->dehydrated(false),
@@ -444,10 +464,10 @@ class PickupResource extends Resource
                                             // =========================
                                             Forms\Components\TextInput::make('item_code_manual')
                                                 ->label('Kode Barang (Manual)')
-                                                ->maxLength(50)
+                                                ->maxLength(200)
                                                 ->columnSpan(4)
                                                 ->visible(fn(Get $get) => static::getCompanyMode((int) $get('../../perusahaan_id')) === 'ssm')
-                                                ->live()
+                                                ->reactive()
                                                 ->afterStateUpdated(fn($state, Set $set) => $set('item_code', $state))
                                                 ->dehydrated(false),
 
@@ -475,13 +495,14 @@ class PickupResource extends Resource
                                                 ->disabled(fn(Get $get) => static::getCompanyMode((int) $get('../../perusahaan_id')) === 'sap')
                                                 ->dehydrated()
                                                 ->columnSpan(1),
+
                                             Forms\Components\TextInput::make('dummy_rules_placeholder')
                                                 ->hidden()
                                                 ->rules([
                                                     function (Get $get, ?\Illuminate\Database\Eloquent\Model $record) {
                                                         return function (string $attribute, $value, \Closure $fail) use ($get, $record) {
+                                                            // Jangan validasi SAP jika bukan mode SAP atau record sudah ada (edit mode)
                                                             if ($record !== null) return;
-
                                                             if (static::getCompanyMode((int) $get('../../perusahaan_id')) !== 'sap') return;
 
                                                             $docEntry = (int) ($get('../../po_docentry') ?? 0);
@@ -491,15 +512,12 @@ class PickupResource extends Resource
                                                             if (! $itemCode) return;
 
                                                             try {
-                                                                $sap   = app(SapHanaService::class);
+                                                                $sap = app(SapHanaService::class);
                                                                 $lines = $sap->getPurchaseOrderLines($docEntry);
-                                                                $row   = collect($lines)->firstWhere('ItemCode', (string) $itemCode);
+                                                                $row = collect($lines)->firstWhere('ItemCode', (string) $itemCode);
                                                                 if (! $row) return;
 
                                                                 $poQty = (float) ($row['Quantity'] ?? 0);
-
-                                                                // Qty yang sudah dipickup untuk item ini di pickup LAIN (non-canceled)
-                                                                // Exclude pickup yang sedang diedit (edit mode)
                                                                 $currentPickupId = $record?->id;
 
                                                                 $alreadyPickedQty = \App\Models\PickupItem::query()
@@ -514,17 +532,17 @@ class PickupResource extends Resource
                                                                 $sisaQty = max(0, $poQty - (float) $alreadyPickedQty);
 
                                                                 if ((float) $value > $sisaQty && $sisaQty < $poQty) {
-                                                                    // Ada sebagian sudah dipickup sebelumnya
-                                                                    $poQtyFmt   = number_format($poQty, 0);
+                                                                    $poQtyFmt = number_format($poQty, 0);
                                                                     $alreadyFmt = number_format((float) $alreadyPickedQty, 0);
-                                                                    $sisaFmt    = number_format($sisaQty, 0);
-                                                                    $fail("Qty melebihi sisa PO. Total PO: {$poQtyFmt}, sudah dipickup sebelumnya: {$alreadyFmt}, sisa tersedia: {$sisaFmt}.");
+                                                                    $sisaFmt = number_format($sisaQty, 0);
+                                                                    $fail("Qty melebihi sisa PO. Total PO: {$poQtyFmt}, sudah dipickup: {$alreadyFmt}, sisa: {$sisaFmt}.");
                                                                 } elseif ((float) $value > $poQty) {
                                                                     $poQtyFmt = number_format($poQty, 0);
                                                                     $fail("Qty pickup tidak boleh melebihi qty PO ({$poQtyFmt}).");
                                                                 }
                                                             } catch (\Throwable $e) {
-                                                                // SAP tidak bisa dihubungi, biarkan lolos
+                                                                // Biarkan lolos jika SAP bermasalah
+                                                                \Illuminate\Support\Facades\Log::warning("Validation SAP item error: " . $e->getMessage());
                                                             }
                                                         };
                                                     },
@@ -536,7 +554,7 @@ class PickupResource extends Resource
                                         ->rules([
                                             function (Get $get, ?\Illuminate\Database\Eloquent\Model $record) {
                                                 return function (string $attribute, $value, \Closure $fail) use ($get, $record) {
-                                                    // validasi unique item (hanya yang ada kodenya)
+                                                    // Validasi unique item
                                                     $codes = collect($value)->map(function ($row) {
                                                         return $row['item_code_sap'] ?? $row['item_code_manual'] ?? $row['item_code'] ?? null;
                                                     })->filter()->values();
@@ -546,33 +564,27 @@ class PickupResource extends Resource
                                                         return;
                                                     }
 
+                                                    // Validasi Qty vs SAP (hanya mode SAP dan record baru)
                                                     if ($record !== null) return;
-
-                                                    // Validasi total qty pickup vs qty PO (hanya SAP mode)
                                                     if (static::getCompanyMode((int) $get('../perusahaan_id')) !== 'sap') return;
 
                                                     $docEntry = (int) ($get('../po_docentry') ?? 0);
                                                     if ($docEntry <= 0) return;
 
                                                     try {
-                                                        $sap   = app(SapHanaService::class);
+                                                        $sap = app(SapHanaService::class);
                                                         $lines = $sap->getPurchaseOrderLines($docEntry);
-
-                                                        // Buat map: itemCode => poQty
                                                         $poQtyMap = collect($lines)->keyBy('ItemCode')->map(fn($l) => (float) ($l['Quantity'] ?? 0));
 
                                                         foreach ($value as $row) {
-                                                            $itemCode     = $row['item_code'] ?? $row['item_code_sap'] ?? null;
-                                                            $pickupQty    = (float) ($row['pickup_quantity'] ?? 0);
+                                                            $itemCode = $row['item_code'] ?? $row['item_code_sap'] ?? null;
+                                                            $pickupQty = (float) ($row['pickup_quantity'] ?? 0);
                                                             if (! $itemCode) continue;
 
                                                             $poQty = $poQtyMap->get($itemCode, null);
                                                             if ($poQty === null) continue;
 
-                                                            // Cek total pickup di DB untuk item ini (di pickup lain, non-canceled)
-                                                            // Exclude pickup yang sedang diedit (edit mode)
                                                             $currentPickupId = $record?->id;
-
                                                             $alreadyPickedQty = \App\Models\PickupItem::query()
                                                                 ->where('item_code', $itemCode)
                                                                 ->whereHas('pickup', function ($q) use ($docEntry, $currentPickupId) {
@@ -582,21 +594,19 @@ class PickupResource extends Resource
                                                                 })
                                                                 ->sum('pickup_quantity');
 
-                                                            $sisaQty  = max(0, $poQty - (float) $alreadyPickedQty);
-                                                            $totalBaru = $pickupQty;
-
-                                                            if ($totalBaru > $sisaQty && $sisaQty < $poQty) {
-                                                                $poFmt   = number_format($poQty, 0);
-                                                                $alrFmt  = number_format((float) $alreadyPickedQty, 0);
-                                                                $sisaFmt = number_format($sisaQty, 0);
-                                                                $fail("Item [{$itemCode}]: qty melebihi sisa PO. Total PO: {$poFmt}, sudah dipickup sebelumnya: {$alrFmt}, sisa: {$sisaFmt}.");
-                                                            } elseif ($totalBaru > $poQty) {
+                                                            $sisaQty = max(0, $poQty - (float) $alreadyPickedQty);
+                                                            if ($pickupQty > $sisaQty && $sisaQty < $poQty) {
                                                                 $poFmt = number_format($poQty, 0);
-                                                                $fail("Item [{$itemCode}]: qty pickup ({$totalBaru}) melebihi qty PO ({$poFmt}).");
+                                                                $alrFmt = number_format((float) $alreadyPickedQty, 0);
+                                                                $sisaFmt = number_format($sisaQty, 0);
+                                                                $fail("Item [{$itemCode}]: qty melebihi sisa PO. Total PO: {$poFmt}, sudah dipickup: {$alrFmt}, sisa: {$sisaFmt}.");
+                                                            } elseif ($pickupQty > $poQty) {
+                                                                $poFmt = number_format($poQty, 0);
+                                                                $fail("Item [{$itemCode}]: qty pickup ({$pickupQty}) melebihi qty PO ({$poFmt}).");
                                                             }
                                                         }
                                                     } catch (\Throwable $e) {
-                                                        // SAP tidak bisa dihubungi, biarkan lolos
+                                                        // Biarkan lolos jika SAP bermasalah
                                                     }
                                                 };
                                             },
@@ -764,21 +774,29 @@ class PickupResource extends Resource
                                         ->label('Supplier Ekspedisi (SAP)')
                                         ->nullable()
                                         ->searchable()
-                                        ->preload()
-                                        ->options(function (Get $get) {
-                                            if (static::getCompanyMode((int) $get('perusahaan_id')) !== 'sap') return [];
+                                        ->getSearchResultsUsing(function (string $search, Get $get) {
+                                            if (static::getCompanyMode((int) $get('perusahaan_id')) !== 'sap') {
+                                                return [];
+                                            }
 
                                             $sap = app(SapHanaService::class);
 
-                                            if (method_exists($sap, 'getVendorsEkspedisi')) {
-                                                return collect($sap->getVendorsEkspedisi())
-                                                    ->mapWithKeys(fn($r) => [
-                                                        (string) $r['CardCode'] => (string) $r['CardCode'] . ' — ' . (string) ($r['CardName'] ?? ''),
-                                                    ])
-                                                    ->all();
-                                            }
+                                            return collect($sap->searchVendorEkspedisi($search))
+                                                ->mapWithKeys(fn($r) => [
+                                                    (string) $r['CardCode'] =>
+                                                    (string) $r['CardCode'] . ' — ' . (string) ($r['CardName'] ?? ''),
+                                                ])
+                                                ->toArray();
+                                        })
+                                        ->getOptionLabelUsing(function ($value) {
+                                            if (! $value) return null;
 
-                                            return [];
+                                            $sap = app(SapHanaService::class);
+                                            $bp = $sap->getVendorByCode((string) $value);
+
+                                            return $bp
+                                                ? $bp['CardCode'] . ' — ' . $bp['CardName']
+                                                : $value;
                                         })
                                         ->reactive()
                                         ->afterStateUpdated(function ($state, Forms\Set $set, Get $get) {

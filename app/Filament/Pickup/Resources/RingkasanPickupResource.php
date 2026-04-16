@@ -49,6 +49,9 @@ class RingkasanPickupResource extends Resource
             ->defaultSort('id', 'desc')
             ->poll('5s')
             ->columns([
+                Tables\Columns\TextColumn::make('creator.name')
+                    ->label('Dibuat Oleh')
+                    ->toggleable(),
                 Tables\Columns\TextColumn::make('tagihan_ke')
                     ->label('Pick Up')
                     ->formatStateUsing(fn($state) => new HtmlString('<b>' . e(strtoupper($state ?? '-')) . '</b>'))
