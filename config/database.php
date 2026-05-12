@@ -41,27 +41,6 @@ return [
             'journal_mode' => null,
             'synchronous' => null,
         ],
-        'hana' => [
-            'driver'   => 'hana',
-            'dsn'      => 'odbc:SAPHANA',
-            'database' => 'SAP', // bebas, cuma dipakai Laravel
-            'schema'   => 'SAP', // ⬅⬅ TAMBAHKAN INI
-            'username' => env('HANA_USERNAME', 'SYSTEM'),
-            'password' => env('HANA_PASSWORD', 'P@ssw0rd'),
-            'prefix'   => '',
-        ],
-        'monitor_sales_pgsql' => [
-            'driver'   => 'pgsql',
-            'host'     => env('PG_MONITOR_HOST', '127.0.0.1'),
-            'port'     => env('PG_MONITOR_PORT', '5432'),
-            'database' => env('PG_MONITOR_DATABASE', 'monitor_sales'),
-            'username' => env('PG_MONITOR_USERNAME', 'postgres'),
-            'password' => env('PG_MONITOR_PASSWORD', ''),
-            'charset'  => 'utf8',
-            'prefix'   => '',
-            'schema'   => 'public',
-            'sslmode'  => 'prefer',
-        ],
 
         'mysql' => [
             'driver' => 'mysql',
